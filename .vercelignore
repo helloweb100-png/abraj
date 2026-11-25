@@ -5,3 +5,6 @@ node_modules
 *.log
 Thumbs.db
 .DS_Store
+
+# Audios del cliente (no se publican)
+whatsapp-audio-*

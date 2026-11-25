@@ -1,8 +1,8 @@
 /* ==========================================================================
    ABRAJ · script.js
-   Sin librerías: Web Animations, canvas y requestAnimationFrame.
-   Regla de oro: si algo falla, el contenido queda visible (los estados
-   ocultos solo existen bajo la clase .rdy, que se agrega al arrancar).
+   Librerías locales (assets/vendor): GSAP + ScrollTrigger + SplitText (animación) y Lenis (scroll suave).
+   Regla de oro: las funciones útiles (WhatsApp, formulario, pestañas, acordeones, video) NO dependen de
+   GSAP. Si las librerías no cargan, la página queda completa y legible, solo sin coreografía.
    ========================================================================== */
 
 /* Único lugar donde vive el número de WhatsApp (formato internacional sin "+").
@@ -16,23 +16,19 @@ const WHATSAPP = { principal: '524439425320', edomex: '525656866128' };
   const $ = (s, c = document) => c.querySelector(s);
   const $$ = (s, c = document) => Array.from(c.querySelectorAll(s));
   const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
-  const lerp = (a, b, t) => a + (b - a) * t;
-  const ease = (t) => (t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+  const rand = (a, b) => a + Math.random() * (b - a);
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const fine = matchMedia('(pointer: fine)').matches;
-  const isDesktop = () => matchMedia('(min-width: 1024px)').matches;
-  const safe = (fn, name) => { try { return fn(); } catch (err) { console.warn('[ABRAJ]', name || fn.name, err); } };
+  const fine = matchMedia('(hover: hover) and (pointer: fine)').matches;
+  const safe = (fn, name) => { try { return fn(); } catch (err) { console.warn('[ABRAJ]', name, err); } };
 
-  // Liberación garantizada del bloqueo de scroll y marca de "JS listo"
-  setTimeout(() => doc.classList.remove('is-loading'), 2400);
-  doc.classList.add('rdy');
+  let lenis = null;       // scroll suave (si hay animaciones)
+  let fxOn = false;       // GSAP disponible
 
-  let ready = false;          // el cargador ya terminó
-  let loaderDone = false;
+  /* ======================================================================
+     A · FUNCIONES QUE NO NECESITAN GSAP
+     ====================================================================== */
 
-  /* ------------------------------------------------------------------
-     1 · WhatsApp: convierte todos los [data-wa] en enlaces wa.me
-     ------------------------------------------------------------------ */
+  /* A1 · WhatsApp: convierte todos los [data-wa] en enlaces wa.me */
   const waURL = (num, msg) => `https://wa.me/${num}?text=${encodeURIComponent(msg)}`;
   safe(() => {
     $$('[data-wa]').forEach((el) => {
@@ -50,840 +46,112 @@ const WHATSAPP = { principal: '524439425320', edomex: '525656866128' };
     }
   }, 'whatsapp');
 
-  /* ------------------------------------------------------------------
-     2 · Cargador (≤ 2.2 s; el CSS lo mata a los 2.5 s si todo falla)
-     ------------------------------------------------------------------ */
-  const loader = $('#loader');
-  const ldN = $('#ld-n');
-  const t0 = performance.now();
-  const LD_DUR = reduce ? 500 : 1700;
+  /* A2 · Menú móvil */
+  const menuApi = safe(() => {
+    const burger = $('.burger'), menu = $('#menu');
+    if (!burger || !menu) return { close() {} };
+    const set = (open) => {
+      burger.setAttribute('aria-expanded', String(open));
+      burger.setAttribute('aria-label', open ? 'Cerrar menú' : 'Abrir menú');
+      menu.classList.toggle('is-open', open);
+      menu.setAttribute('aria-hidden', String(!open));
+      if (lenis) { open ? lenis.stop() : lenis.start(); } else { doc.style.overflow = open ? 'hidden' : ''; }
+    };
+    burger.addEventListener('click', () => set(burger.getAttribute('aria-expanded') !== 'true'));
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') set(false); });
+    matchMedia('(min-width: 901px)').addEventListener('change', (m) => { if (m.matches) set(false); });
+    return { close: () => set(false) };
+  }, 'menu') || { close() {} };
 
-  function finishLoader() {
-    if (loaderDone) return;
-    loaderDone = true;
-    if (loader) loader.classList.add('is-done');
-    document.body.classList.add('loaded');
-    doc.classList.remove('is-loading');
-    ready = true;
-    revealCheck();
-    update();
-    safe(() => {
-      const wa = $('#wa-float'), bub = $('#wa-bubble');
-      if (wa && !wa.hidden && bub) {
-        setTimeout(() => { bub.classList.add('show'); setTimeout(() => bub.classList.remove('show'), 5000); }, 6000);
-      }
-    }, 'burbuja');
-  }
-
-  function tickLoader(now) {
-    const p = clamp((now - t0) / LD_DUR);
-    if (ldN) ldN.textContent = String(Math.round(ease(p) * 100)).padStart(3, '0');
-    if (p < 1 && !loaderDone) requestAnimationFrame(tickLoader);
-  }
-  if (loader) {
-    requestAnimationFrame(tickLoader);
-    const minT = new Promise((r) => setTimeout(r, reduce ? 500 : 1800));
-    const winL = new Promise((r) => (document.readyState === 'complete' ? r() : addEventListener('load', r, { once: true })));
-    Promise.race([Promise.all([minT, winL]), new Promise((r) => setTimeout(r, 2200))]).then(finishLoader);
-  } else { finishLoader(); }
-
-  /* ------------------------------------------------------------------
-     3 · Utilidades de texto: partir títulos y palabras
-     ------------------------------------------------------------------ */
-  function splitNode(node, st) {
-    Array.from(node.childNodes).forEach((child) => {
-      if (child.nodeType === 3) {
-        const frag = document.createDocumentFragment();
-        child.textContent.split(/(\s+)/).forEach((part) => {
-          if (!part) return;
-          if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(' ')); return; }
-          const w = document.createElement('span'); w.className = 'w'; w.setAttribute('aria-hidden', 'true');
-          const i = document.createElement('span'); i.className = 'w__i'; i.textContent = part;
-          i.style.setProperty('--wi', st.n++);
-          w.appendChild(i); frag.appendChild(w);
-        });
-        node.replaceChild(frag, child);
-      } else if (child.nodeType === 1) splitNode(child, st);
-    });
-  }
-  safe(() => $$('[data-split]').forEach((el) => { el.setAttribute('aria-label', el.textContent.replace(/\s+/g, ' ').trim()); splitNode(el, { n: 0 }); }), 'split');
-
-  let manWords = [];
+  /* A3 · Anclas internas con scroll suave (Lenis si existe, nativo si no) */
   safe(() => {
-    const el = $('[data-words]'); if (!el) return;
-    el.setAttribute('aria-label', el.textContent.replace(/\s+/g, ' ').trim());
-    const walk = (node) => Array.from(node.childNodes).forEach((c) => {
-      if (c.nodeType === 3) {
-        const frag = document.createDocumentFragment();
-        c.textContent.split(/(\s+)/).forEach((part) => {
-          if (!part) return;
-          if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(' ')); return; }
-          const s = document.createElement('span'); s.className = 'mw'; s.textContent = part; s.setAttribute('aria-hidden', 'true');
-          frag.appendChild(s); manWords.push(s);
-        });
-        node.replaceChild(frag, c);
-      } else if (c.nodeType === 1) walk(c);
-    });
-    walk(el);
-  }, 'words');
-
-  /* ------------------------------------------------------------------
-     4 · Revelado al scroll (IntersectionObserver + respaldo por geometría)
-     ------------------------------------------------------------------ */
-  const revealEls = $$('[data-reveal], [data-split]');
-  const io = 'IntersectionObserver' in window
-    ? new IntersectionObserver((entries) => {
-        entries.forEach((e) => { if (e.isIntersecting && ready) { e.target.classList.add('is-in'); io.unobserve(e.target); } });
-      }, { threshold: .15, rootMargin: '0px 0px -8% 0px' })
-    : null;
-  if (io) revealEls.forEach((el) => io.observe(el));
-
-  function revealCheck() {
-    if (!ready) return;
-    const vh = innerHeight;
-    revealEls.forEach((el) => {
-      if (el.classList.contains('is-in')) return;
-      const r = el.getBoundingClientRect();
-      /* También lo que ya quedó por encima (salto rápido de scroll / ancla) */
-      if (r.top < vh * .92) { el.classList.add('is-in'); if (io) io.unobserve(el); }
-    });
-  }
-  setTimeout(() => { if (!ready) finishLoader(); revealCheck(); }, 2000);
-  setTimeout(() => {
-    revealEls.forEach((el) => { if (!el.classList.contains('is-in') && el.getBoundingClientRect().top < innerHeight * 1.5) el.classList.add('is-in'); });
-  }, 4000);
-  /* Red de seguridad: si algo sigue oculto 8 s después (capturas de página completa,
-     scroll programático, pestañas en segundo plano), se muestra todo. */
-  setTimeout(() => { revealEls.forEach((el) => el.classList.add('is-in')); $$('.mw').forEach((w) => w.classList.add('on')); }, 8000);
-  addEventListener('load', () => setTimeout(revealCheck, 2500));
-  let scrEnd;
-  addEventListener('scroll', () => { clearTimeout(scrEnd); scrEnd = setTimeout(revealCheck, 200); }, { passive: true });
-
-  /* ------------------------------------------------------------------
-     5 · Marquesinas: rellena hasta cubrir la pantalla
-     ------------------------------------------------------------------ */
-  const marquees = $$('.marquee').map((m) => {
-    const groups = $$('.marquee__group', m);
-    return { groups, base: groups[0] ? groups[0].innerHTML : '' };
-  });
-  function fillMarquees() {
-    marquees.forEach(({ groups, base }) => {
-      if (!groups.length) return;
-      const first = groups[0];
-      first.innerHTML = base;
-      let guard = 0;
-      while (first.scrollWidth < innerWidth && guard++ < 8) first.innerHTML += base;
-      groups.slice(1).forEach((g) => { g.innerHTML = first.innerHTML; });
-    });
-  }
-  safe(fillMarquees, 'marquesinas');
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => safe(fillMarquees, 'marquesinas'));
-
-  /* ------------------------------------------------------------------
-     6 · Encabezado, menú, scroll-spy, progreso de lectura
-     ------------------------------------------------------------------ */
-  const hdr = $('#hdr');
-  const burger = $('.burger');
-  const menu = $('#menu');
-  let menuOpen = false;
-  function toggleMenu(force) {
-    menuOpen = typeof force === 'boolean' ? force : !menuOpen;
-    if (menu) { menu.classList.toggle('is-open', menuOpen); menu.setAttribute('aria-hidden', String(!menuOpen)); }
-    if (burger) { burger.setAttribute('aria-expanded', String(menuOpen)); burger.setAttribute('aria-label', menuOpen ? 'Cerrar menú' : 'Abrir menú'); }
-    doc.style.overflow = menuOpen ? 'hidden' : '';
-    if (menuOpen && hdr) hdr.classList.remove('is-hidden');
-  }
-  if (burger) burger.addEventListener('click', () => toggleMenu());
-  $$('#menu a').forEach((a) => a.addEventListener('click', () => toggleMenu(false)));
-  addEventListener('keydown', (e) => { if (e.key === 'Escape' && menuOpen) toggleMenu(false); });
-
-  const navLinks = $$('.nav a');
-  const navInd = $('.nav__ind');
-  const spyIds = ['servicios', 'sectores', 'metodo', 'nosotros', 'unete', 'contacto'];
-  const spySecs = spyIds.map((id) => document.getElementById(id));
-  let spyCur = -2;
-  function placeInd(i) {
-    if (!navInd) return;
-    const a = navLinks[i];
-    if (!a) { navInd.style.setProperty('--o', '0'); return; }
-    navInd.style.setProperty('--x', a.offsetLeft + 'px');
-    navInd.style.setProperty('--w', a.offsetWidth + 'px');
-    navInd.style.setProperty('--o', '1');
-  }
-  function spy() {
-    const line = innerHeight * .4;
-    let idx = -1;
-    spySecs.forEach((s, i) => { if (!s) return; const r = s.getBoundingClientRect(); if (r.top <= line && r.bottom > line) idx = i; });
-    if (idx !== spyCur) {
-      spyCur = idx;
-      navLinks.forEach((a, i) => a.classList.toggle('is-active', i === idx));
-      placeInd(idx);
-    }
-  }
-
-  let lastY = scrollY;
-  function headerUpdate() {
-    const y = scrollY;
-    const dy = y - lastY;
-    if (Math.abs(dy) > 6) {
-      if (hdr) hdr.classList.toggle('is-hidden', dy > 0 && y > 240 && !menuOpen);
-      lastY = y;
-    }
-    const max = Math.max(1, doc.scrollHeight - innerHeight);
-    const read = clamp(y / max);
-    if (hdr) hdr.style.setProperty('--read', read.toFixed(4));
-    const ring = $('#totop-ring');
-    if (ring) ring.style.strokeDashoffset = String(100 - read * 100);
-  }
-  const totop = $('#totop');
-  if (totop) totop.addEventListener('click', () => scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' }));
-
-  /* ------------------------------------------------------------------
-     7 · Progreso de scroll (--p) y efectos anclados
-     ------------------------------------------------------------------ */
-  const scrubs = $$('[data-scrub]').map((el) => ({ el, type: el.dataset.scrub || 'pass' }));
-  function computeP(type, el) {
-    const r = el.getBoundingClientRect();
-    const vh = innerHeight;
-    switch (type) {
-      case 'exit': return clamp(-r.top / Math.max(1, r.height));
-      case 'sticky': return clamp(-r.top / Math.max(1, r.height - vh));
-      case 'words': return clamp((vh * .85 - r.top) / (vh * .6));
-      case 'steps': return clamp((vh * .6 - r.top) / Math.max(1, r.height));
-      case 'enter': return clamp((vh - r.top) / (vh * .95));
-      default: return clamp((vh - r.top) / (vh + r.height));
-    }
-  }
-
-  /* --- Servicios --- */
-  const svc = $('#servicios');
-  const svcPin = $('#svc-pin');
-  const svcTrack = $('#svc-track');
-  const cards = $$('[data-card]');
-  const svcCur = $('#svc-cur');
-  let svcLive = false;
-  function setSvcLive() {
-    const live = isDesktop() && !reduce;
-    if (live !== svcLive) {
-      svcLive = live;
-      if (svc) svc.classList.toggle('is-live', live);
-      if (!live && svcTrack) svcTrack.style.removeProperty('--tx-svc');
-      cards.forEach((c) => { c.style.removeProperty('--depth'); });
-    }
-  }
-  function svcUpdate(p) {
-    if (!cards.length) return;
-    if (reduce) { cards.forEach((c) => c.classList.add('is-active')); return; }
-    if (svcLive) {
-      const maxT = Math.max(0, svcTrack.scrollWidth - innerWidth);
-      svcTrack.style.setProperty('--tx-svc', (-p * maxT).toFixed(1) + 'px');
-      svcTrack.parentElement.style.setProperty('--bar', p.toFixed(4));
-      const target = innerWidth * .55;
-      let best = 0, bd = Infinity;
-      cards.forEach((c, i) => { const r = c.getBoundingClientRect(); const d = Math.abs(r.left + r.width / 2 - target); if (d < bd) { bd = d; best = i; } });
-      cards.forEach((c, i) => c.classList.toggle('is-active', i === best));
-      if (svcCur) svcCur.textContent = '0' + (best + 1);
-    } else {
-      const vh = innerHeight;
-      let act = -1;
-      cards.forEach((c, i) => {
-        const r = c.getBoundingClientRect();
-        if (r.top < vh * .62 && r.bottom > vh * .2) act = i;
-        const next = cards[i + 1];
-        if (next) {
-          const nr = next.getBoundingClientRect();
-          const thisTop = 84 + i * 14;
-          c.style.setProperty('--depth', clamp(1 - (nr.top - (thisTop + 14)) / (r.height * .8)).toFixed(3));
-        }
-      });
-      cards.forEach((c, i) => c.classList.toggle('is-active', i === act));
-    }
-  }
-
-  /* --- Método: cinta ondulada que se dibuja --- */
-  const metSteps = $('#met-steps');
-  const metSvg = $('#met-svg');
-  const metRail = $('#met-rail');
-  const metDraw = $('#met-draw');
-  const metDrop = $('#met-drop');
-  const stepEls = $$('[data-step]');
-  const metRoll = $('#met-roll');
-  const metCur = $('#met-cur');
-  const metTitles = $$('.met__titles span');
-  let metLen = 0;
-  function buildRibbon() {
-    if (!metSteps || !metSvg || !metRail || !metDraw) return;
-    const h = metSteps.offsetHeight;
-    const amp = innerWidth >= 900 ? 9 : 0;
-    let d = 'M22 0';
-    for (let y = 8; y <= h; y += 8) d += ` L${(22 + amp * Math.sin(y / 58)).toFixed(2)} ${y}`;
-    metSvg.setAttribute('viewBox', `0 0 44 ${h}`);
-    metRail.setAttribute('d', d);
-    metDraw.setAttribute('d', d);
-    metLen = metDraw.getTotalLength();
-    metDraw.style.strokeDasharray = String(metLen);
-    metDraw.style.strokeDashoffset = String(metLen);
-    if (metDrop) metDrop.style.opacity = '0';
-  }
-  function metUpdate(p) {
-    if (!metSteps || !metLen) return;
-    const top = metSteps.getBoundingClientRect().top;
-    const h = metSteps.offsetHeight;
-    const lineY = p * h;
-    let idx = 0;
-    stepEls.forEach((s, i) => {
-      const n = $('.step__node', s);
-      const r = n.getBoundingClientRect();
-      const y = r.top + r.height / 2 - top;
-      const on = y <= lineY;
-      s.classList.toggle('is-on', on);
-      if (on) idx = i;
-    });
-    metDraw.style.strokeDashoffset = String(metLen * (1 - p));
-    const pt = metDraw.getPointAtLength(metLen * p);
-    if (metDrop) { metDrop.setAttribute('cx', pt.x.toFixed(1)); metDrop.setAttribute('cy', pt.y.toFixed(1)); metDrop.style.opacity = p > .01 && p < .995 ? '1' : '0'; }
-    if (metRoll) metRoll.style.setProperty('--k', idx);
-    if (metCur) metCur.textContent = String(idx + 1);
-    metTitles.forEach((t, i) => t.classList.toggle('is-on', i === idx));
-  }
-
-  /* --- Nosotros: la imagen se abre en grande --- */
-  const about = $('#nosotros');
-  if (about && !reduce) about.classList.add('is-live');
-  function aboutUpdate(p) {
-    if (!about || reduce) return;
-    const e = ease(clamp(p / .7));
-    about.style.setProperty('--e', e.toFixed(4));
-    about.style.setProperty('--sc', (2.4 - 1.4 * e).toFixed(4));
-    about.style.setProperty('--c', p > .6 ? '1' : '0');
-  }
-
-  /* --- Cobertura: el arco se dibuja --- */
-  const arcDraw = $('#arc-draw');
-
-  /* --- Bucle de actualización por scroll --- */
-  let ticking = false;
-  function update() {
-    ticking = false;
-    const vh = innerHeight;
-    scrubs.forEach(({ el, type }) => {
-      const r = el.getBoundingClientRect();
-      // Evita trabajo lejos de la pantalla (salvo los que escriben estado global)
-      if (r.bottom < -vh * 1.5 || r.top > vh * 2.5) {
-        if (el.id !== 'inicio' && el.tagName !== 'FOOTER' && type !== 'sticky') return;
-      }
-      const p = computeP(type, el);
-      el.style.setProperty('--p', p.toFixed(4));
-      if (el.id === 'svc-pin') svcUpdate(p);
-      else if (el.id === 'nosotros') aboutUpdate(p);
-      else if (type === 'words' && manWords.length) {
-        const n = Math.round(p * (manWords.length + 3));
-        manWords.forEach((w, i) => w.classList.toggle('on', i < n));
-      } else if (type === 'steps') metUpdate(p);
-      else if (el.id === 'cobertura' && arcDraw) arcDraw.style.strokeDashoffset = String(1 - clamp((p - .12) / .3));
-    });
-    if (!svcLive) svcUpdate(0);
-    headerUpdate();
-    spy();
-    revealCheck();
-  }
-  function onScroll() { if (!ticking) { ticking = true; requestAnimationFrame(update); } }
-  addEventListener('scroll', onScroll, { passive: true });
-
-  let rzT;
-  addEventListener('resize', () => {
-    clearTimeout(rzT);
-    rzT = setTimeout(() => {
-      setSvcLive(); buildRibbon(); positionTab(); fillMarquees(); placeInd(spyCur);
-      if (innerWidth >= 1024 && menuOpen) toggleMenu(false);
-      update();
-    }, 120);
-    onScroll();
-  });
-
-  /* ------------------------------------------------------------------
-     8 · Hero: «Purificación» (canvas) + escenario 3D + haz de luz
-     ------------------------------------------------------------------ */
-  const hero = $('#inicio');
-  const cv = $('#purificacion');
-  let heroVisible = true;
-  let ptr = null;                 // puntero en coordenadas del lienzo
-  let nx = 0, ny = 0, hasPtr = false, lastMove = 0;
-  let cx = 0, cy = 0;
-  const tilt = $('.stage__tilt');
-
-  const purify = (() => {
-    if (!cv || !cv.getContext) return null;
-    const ctx = cv.getContext('2d');
-    if (!ctx) return null;
-    const TH = 18 * Math.PI / 180, COS = Math.cos(TH), SIN = Math.sin(TH);
-    const rnd = (a, b) => a + Math.random() * (b - a);
-    let W = 1, H = 1, dpr = 1, bandT = 0;
-    const parts = [], bubs = [];
-    const mobile = innerWidth < 700;
-    const N = mobile ? 48 : 150, NB = 12;
-
-    function mk() { return { x: rnd(0, W), y: rnd(0, H), r: rnd(.6, 2.2), vx: rnd(-6, 6), vy: rnd(-9, -1), a: rnd(.15, .5), ph: rnd(0, 6.28), st: 0, t: 0, glow: 0 }; }
-    function size() {
-      dpr = Math.min(devicePixelRatio || 1, 1.5);
-      const r = cv.getBoundingClientRect();
-      W = Math.max(1, r.width); H = Math.max(1, r.height);
-      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (!parts.length) {
-        for (let i = 0; i < N; i++) parts.push(mk());
-        for (let i = 0; i < NB; i++) bubs.push({ x: rnd(0, W), y: rnd(0, H), r: rnd(6, 22), vy: rnd(14, 34), ph: rnd(0, 6.28), sw: rnd(10, 26) });
-      }
-    }
-    function star(x, y, s) {
-      ctx.beginPath();
-      ctx.moveTo(x, y - s); ctx.quadraticCurveTo(x, y, x + s, y);
-      ctx.quadraticCurveTo(x, y, x, y + s); ctx.quadraticCurveTo(x, y, x - s, y);
-      ctx.quadraticCurveTo(x, y, x, y - s); ctx.fill();
-    }
-    function frame(now, dt) {
-      const bandW = W * .22;
-      const umax = W * COS + H * SIN;
-      bandT = (bandT + dt) % 7;
-      const uc = -bandW / 2 + (bandT / 7) * (umax + bandW);
-      ctx.clearRect(0, 0, W, H);
-
-      // Banda de barrido inclinada 18°
-      ctx.save();
-      ctx.rotate(TH);
-      const g = ctx.createLinearGradient(uc - bandW / 2, 0, uc + bandW / 2, 0);
-      g.addColorStop(0, 'rgba(34,201,214,0)'); g.addColorStop(.5, 'rgba(34,201,214,.18)'); g.addColorStop(1, 'rgba(34,201,214,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(uc - bandW / 2, -(W + H), bandW, (W + H) * 3);
-      ctx.restore();
-
-      // Burbujas
-      ctx.lineWidth = 1.2;
-      bubs.forEach((b) => {
-        b.y -= b.vy * dt;
-        if (b.y < -b.r * 2) { b.y = H + b.r; b.x = rnd(0, W); }
-        const x = b.x + Math.sin(now / 1000 * .8 + b.ph) * b.sw;
-        ctx.beginPath(); ctx.arc(x, b.y, b.r, 0, 6.2832);
-        ctx.fillStyle = 'rgba(111,230,236,.04)'; ctx.fill();
-        ctx.strokeStyle = 'rgba(111,230,236,.35)'; ctx.stroke();
-        ctx.beginPath(); ctx.arc(x, b.y, b.r * .72, 3.6, 4.5);
-        ctx.strokeStyle = 'rgba(255,255,255,.45)'; ctx.stroke();
-      });
-
-      // Polvo, destellos y chispas
-      for (let i = 0; i < parts.length; i++) {
-        const p = parts[i];
-        if (p.st === 0) {
-          p.x += (p.vx + Math.sin(now / 1500 + p.ph) * 4) * dt;
-          p.y += p.vy * dt;
-          if (p.y < -5) p.y = H + 5;
-          if (p.x < -5) p.x = W + 5; else if (p.x > W + 5) p.x = -5;
-          if (ptr) {
-            const dx = p.x - ptr.x, dy = p.y - ptr.y, d2 = dx * dx + dy * dy;
-            if (d2 < 8100) { const d = Math.sqrt(d2) || 1, f = 1 - d / 90; p.x += dx / d * f * 140 * dt; p.y += dy / d * f * 140 * dt; p.glow = .45; }
-          }
-          if (p.glow > 0) p.glow = Math.max(0, p.glow - dt);
-          const u = p.x * COS + p.y * SIN;
-          if (Math.abs(u - uc) < bandW / 2 && dt > 0) { p.st = 1; p.t = 0; }
-          ctx.fillStyle = `rgba(190,225,240,${Math.min(1, p.a + p.glow)})`;
-          ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (p.glow > 0 ? 1.6 : 1), 0, 6.2832); ctx.fill();
-        } else {
-          p.t += dt;
-          if (p.st === 1) {
-            ctx.fillStyle = 'rgba(111,230,236,.22)';
-            ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 4.5, 0, 6.2832); ctx.fill();
-            ctx.fillStyle = 'rgba(225,255,255,.95)';
-            ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 2.5, 0, 6.2832); ctx.fill();
-            if (p.t > .35) { p.st = 2; p.t = 0; }
-          } else {
-            ctx.fillStyle = `rgba(200,255,255,${1 - p.t / .5})`;
-            star(p.x, p.y, 3 + p.r * 4);
-            if (p.t > .5) {
-              p.st = 0; p.t = 0;
-              let ok = false;
-              for (let k = 0; k < 6 && !ok; k++) {
-                const x = rnd(0, W), y = rnd(0, H);
-                if (x * COS + y * SIN < uc - bandW / 2 - 20) { p.x = x; p.y = y; ok = true; }
-              }
-              if (!ok) { p.x = -4; p.y = rnd(0, H); }
-              p.r = rnd(.6, 2.2); p.a = rnd(.15, .5);
-            }
-          }
-        }
-      }
-    }
-    size();
-    return { size, frame, still() { bandT = 3.2; frame(0, 0); } };
-  })();
-
-  if (purify) {
-    if (reduce) purify.still();
-    addEventListener('resize', () => { safe(() => { purify.size(); if (reduce) purify.still(); }, 'canvas'); });
-  }
-
-  if (hero) {
-    if ('IntersectionObserver' in window) new IntersectionObserver((en) => { heroVisible = en[0].isIntersecting; }, { threshold: 0 }).observe(hero);
-    hero.addEventListener('pointermove', (e) => {
-      if (cv) { const r = cv.getBoundingClientRect(); ptr = { x: e.clientX - r.left, y: e.clientY - r.top }; }
-      if (e.pointerType === 'mouse') {
-        nx = (e.clientX / innerWidth - .5) * 2; ny = (e.clientY / innerHeight - .5) * 2;
-        hasPtr = true; lastMove = performance.now();
-      }
-    }, { passive: true });
-    hero.addEventListener('pointerleave', () => { ptr = null; });
-  }
-
-  /* ------------------------------------------------------------------
-     9 · Bucle principal: tilt 3D, cursor, canvas
-     ------------------------------------------------------------------ */
-  const glow = $('.cursor-glow');
-  let gx = innerWidth / 2, gy = innerHeight / 2, gtx = gx, gty = gy;
-  if (glow && fine) {
-    addEventListener('pointermove', (e) => {
-      if (e.pointerType !== 'mouse') return;
-      gtx = e.clientX; gty = e.clientY;
-      const over = e.target && e.target.closest && e.target.closest('.sec--light, .wave, .met, .glass, .faq, .prin');
-      glow.classList.toggle('on', !over);
-    }, { passive: true });
-  }
-
-  let lastT = performance.now();
-  function loop(now) {
-    requestAnimationFrame(loop);
-    if (document.hidden) { lastT = now; return; }
-    const dt = Math.min(.05, (now - lastT) / 1000);
-    lastT = now;
-    const t = now / 1000;
-
-    if (tilt && heroVisible && !reduce) {
-      let tx, ty;
-      if (hasPtr && now - lastMove < 2500) { tx = nx * 14; ty = -ny * 10; }
-      else { tx = Math.sin(t * .6) * 14; ty = Math.cos(t * .45) * 8; }
-      cx = lerp(cx, tx, .06); cy = lerp(cy, ty, .06);
-      tilt.style.setProperty('--ry', cx.toFixed(2) + 'deg');
-      tilt.style.setProperty('--rx', cy.toFixed(2) + 'deg');
-    }
-    if (purify && heroVisible && !reduce) purify.frame(now, dt);
-    if (glow && fine && glow.classList.contains('on')) {
-      gx = lerp(gx, gtx, .12); gy = lerp(gy, gty, .12);
-      glow.style.transform = `translate(${gx.toFixed(1)}px, ${gy.toFixed(1)}px)`;
-    }
-  }
-  requestAnimationFrame(loop);
-
-  /* ------------------------------------------------------------------
-     10 · Botones magnéticos
-     ------------------------------------------------------------------ */
-  if (fine && !reduce) {
-    $$('.magnet').forEach((b) => {
-      b.addEventListener('pointermove', (e) => {
-        const r = b.getBoundingClientRect();
-        const dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
-        b.style.setProperty('--tx', clamp(dx * .22, -8, 8).toFixed(1) + 'px');
-        b.style.setProperty('--ty', clamp(dy * .28, -8, 8).toFixed(1) + 'px');
-      });
-      b.addEventListener('pointerleave', () => { b.style.setProperty('--tx', '0px'); b.style.setProperty('--ty', '0px'); });
-    });
-  }
-
-  /* ------------------------------------------------------------------
-     11 · Cristal: niebla que se limpia con el dedo
-     ------------------------------------------------------------------ */
-  safe(() => {
-    const frame = $('#gframe');
-    if (!frame) return;
-    const badgeCta = $('#g-badge');
-    const ringEl = $('#g-ring');
-    const btnClean = $('#g-clean');
-    const c = document.createElement('canvas');
-    c.setAttribute('aria-hidden', 'true');
-    frame.insertBefore(c, badgeCta);
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
-
-    const GX = 36, GY = 50;
-    let W = 0, H = 0, dpr = 1, lw = 54;
-    let grid = new Uint8Array(GX * GY), count = 0;
-    let complete = false, userActive = false, hintRun = 0, hintDone = false, resetT = 0;
-    let drawing = false, last = null;
-
-    function paintFog() {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.shadowBlur = 0;
-      const g = ctx.createLinearGradient(0, 0, W, H);
-      g.addColorStop(0, 'rgba(231,243,248,.96)'); g.addColorStop(1, 'rgba(190,215,228,.96)');
-      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-      for (let i = 0; i < 80; i++) {
-        const x = Math.random() * W, y = Math.random() * H * (Math.random() < .6 ? .6 : 1), r = 1.5 + Math.random() * 7;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832);
-        ctx.fillStyle = 'rgba(255,255,255,.32)'; ctx.fill();
-        ctx.strokeStyle = 'rgba(110,150,175,.22)'; ctx.lineWidth = 1; ctx.stroke();
-        ctx.beginPath(); ctx.arc(x - r * .25, y - r * .25, r * .3, 0, 6.2832);
-        ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fill();
-      }
-    }
-    function resetGrid() { grid = new Uint8Array(GX * GY); count = 0; if (ringEl) ringEl.style.strokeDashoffset = '100'; }
-    function size() {
-      dpr = Math.min(devicePixelRatio || 1, 2);
-      W = frame.clientWidth; H = frame.clientHeight;
-      c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      lw = (innerWidth < 640 ? 28 : 34) * 1.6;
-      paintFog(); resetGrid(); complete = false;
-      frame.classList.remove('is-clean');
-    }
-    function mark(x, y, r) {
-      const cw = W / GX, ch = H / GY;
-      const x0 = Math.max(0, Math.floor((x - r) / cw)), x1 = Math.min(GX - 1, Math.floor((x + r) / cw));
-      const y0 = Math.max(0, Math.floor((y - r) / ch)), y1 = Math.min(GY - 1, Math.floor((y + r) / ch));
-      for (let gy = y0; gy <= y1; gy++) for (let gx = x0; gx <= x1; gx++) {
-        const dx = (gx + .5) * cw - x, dy = (gy + .5) * ch - y;
-        if (dx * dx + dy * dy < r * r) { const k = gy * GX + gx; if (!grid[k]) { grid[k] = 1; count++; } }
-      }
-    }
-    function progress() {
-      const pct = count / (GX * GY);
-      if (ringEl) ringEl.style.strokeDashoffset = String(100 - clamp(pct / .6) * 100);
-      if (pct >= .6 && !complete) finish(last);
-    }
-    function erase(x0, y0, x1, y1, width) {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.lineWidth = width || lw; ctx.strokeStyle = '#000'; ctx.shadowColor = '#000'; ctx.shadowBlur = 14;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      ctx.shadowBlur = 0; ctx.globalCompositeOperation = 'source-over';
-      const dist = Math.hypot(x1 - x0, y1 - y0), steps = Math.max(1, Math.ceil(dist / ((width || lw) / 3)));
-      for (let i = 0; i <= steps; i++) mark(lerp(x0, x1, i / steps), lerp(y0, y1, i / steps), (width || lw) / 2);
-    }
-    function finish(from) {
-      if (complete) return;
-      complete = true;
-      const ox = from ? from.x : W / 2, oy = from ? from.y : H / 2;
-      const R = Math.hypot(W, H), t1 = performance.now();
-      (function wave(now) {
-        const p = clamp((now - t1) / 700);
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.beginPath(); ctx.arc(ox, oy, R * ease(p), 0, 6.2832); ctx.fillStyle = '#000'; ctx.fill();
-        ctx.globalCompositeOperation = 'source-over';
-        if (p < 1) requestAnimationFrame(wave);
-      })(t1);
-      if (ringEl) ringEl.style.strokeDashoffset = '0';
-      frame.classList.add('is-clean');
-      clearTimeout(resetT);
-      resetT = setTimeout(refog, 12000);
-    }
-    function refog() {
-      c.style.transition = 'none'; c.style.opacity = '0';
-      paintFog(); resetGrid(); complete = false; userActive = false; hintDone = false;
-      frame.classList.remove('is-clean');
-      void c.offsetWidth;
-      c.style.transition = 'opacity 3s ease'; c.style.opacity = '1';
-      setTimeout(() => { if (!userActive) playHint(); }, 3200);
-    }
-    function playHint() {
-      if (hintDone || complete || userActive || reduce) return;
-      hintDone = true;
-      const id = ++hintRun;
-      const pts = [[.12, .26], [.88, .26], [.88, .5], [.12, .5], [.12, .74], [.88, .74]].map(([a, b]) => ({ x: a * W, y: b * H }));
-      let total = 0; const segs = [];
-      for (let i = 0; i < pts.length - 1; i++) { const l = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y); segs.push(l); total += l; }
-      const t1 = performance.now(), D = 3200; let prev = pts[0];
-      (function step(now) {
-        if (id !== hintRun || userActive || complete) return;
-        const d = clamp((now - t1) / D) * total;
-        let acc = 0, pos = pts[pts.length - 1];
-        for (let i = 0; i < segs.length; i++) {
-          if (d <= acc + segs[i]) { const k = (d - acc) / segs[i]; pos = { x: lerp(pts[i].x, pts[i + 1].x, k), y: lerp(pts[i].y, pts[i + 1].y, k) }; break; }
-          acc += segs[i];
-        }
-        erase(prev.x, prev.y, pos.x, pos.y, 40);
-        prev = pos;
-        if (d < total) requestAnimationFrame(step); else progress();
-      })(t1);
-    }
-
-    const pt = (e) => { const r = c.getBoundingClientRect(); return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) }; };
-    c.addEventListener('pointerdown', (e) => {
-      drawing = true; userActive = true; hintRun++;
-      last = pt(e); erase(last.x, last.y, last.x, last.y); progress();
-      try { c.setPointerCapture(e.pointerId); } catch (_) { /* sin captura */ }
-    });
-    c.addEventListener('pointermove', (e) => {
-      if (!(drawing || e.pointerType === 'mouse')) return;
-      userActive = true; hintRun++;
-      const p = pt(e);
-      if (!last) last = p;
-      erase(last.x, last.y, p.x, p.y);
-      last = p; progress();
-    });
-    const stop = () => { drawing = false; last = null; };
-    c.addEventListener('pointerup', stop); c.addEventListener('pointercancel', stop); c.addEventListener('pointerleave', () => { last = null; });
-    if (btnClean) btnClean.addEventListener('click', () => { userActive = true; hintRun++; finish(); });
-
-    size();
-    let lastW = frame.clientWidth;
-    addEventListener('resize', () => { if (Math.abs(frame.clientWidth - lastW) > 30) { lastW = frame.clientWidth; size(); } });
-    if ('IntersectionObserver' in window) {
-      const o = new IntersectionObserver((en) => {
-        if (en[0].isIntersecting && !hintDone && !userActive) { setTimeout(playHint, 500); }
-      }, { threshold: .5 });
-      o.observe(frame);
-    }
-  }, 'cristal');
-
-  /* ------------------------------------------------------------------
-     12 · Sectores: acordeón con rotación automática
-     ------------------------------------------------------------------ */
-  safe(() => {
-    const acc = $('#acc');
-    if (!acc) return;
-    const pns = $$('.pn', acc);
-    let cur = 0, paused = false, visible = false, resumeT;
-    function activate(i) {
-      cur = i;
-      pns.forEach((p, k) => {
-        p.classList.toggle('is-active', k === i);
-        const h = $('.pn__head', p); if (h) h.setAttribute('aria-expanded', String(k === i));
-      });
-    }
-    pns.forEach((p, i) => {
-      const h = $('.pn__head', p);
-      if (h) h.addEventListener('click', () => { activate(i); paused = true; clearTimeout(resumeT); resumeT = setTimeout(() => { paused = false; }, 9000); });
-      if (fine) p.addEventListener('mouseenter', () => { if (matchMedia('(min-width: 900px)').matches) { activate(i); paused = true; } });
-    });
-    acc.addEventListener('mouseleave', () => { paused = false; });
-    acc.addEventListener('focusin', () => { paused = true; });
-    acc.addEventListener('focusout', () => { paused = false; });
-    acc.addEventListener('touchstart', () => { paused = true; clearTimeout(resumeT); resumeT = setTimeout(() => { paused = false; }, 8000); }, { passive: true });
-    if ('IntersectionObserver' in window) new IntersectionObserver((en) => { visible = en[0].isIntersecting; }, { threshold: .3 }).observe(acc); else visible = true;
-    if (!reduce) setInterval(() => { if (!paused && visible && !document.hidden) activate((cur + 1) % pns.length); }, 4000);
-  }, 'sectores');
-
-  /* ------------------------------------------------------------------
-     13 · Principios: foco de luz e inclinación 3D
-     ------------------------------------------------------------------ */
-  safe(() => {
-    $$('.pc').forEach((card) => {
-      if (!fine) return;
-      card.addEventListener('pointermove', (e) => {
-        const r = card.getBoundingClientRect();
-        const x = e.clientX - r.left, y = e.clientY - r.top;
-        card.style.setProperty('--mx', x + 'px'); card.style.setProperty('--my', y + 'px');
-        if (!reduce && isDesktop()) {
-          card.style.setProperty('--ry', ((x / r.width - .5) * 12).toFixed(2) + 'deg');
-          card.style.setProperty('--rx', ((y / r.height - .5) * -12).toFixed(2) + 'deg');
-        }
-      });
-      card.addEventListener('pointerleave', () => { card.style.setProperty('--rx', '0deg'); card.style.setProperty('--ry', '0deg'); });
-    });
-  }, 'principios');
-
-  /* ------------------------------------------------------------------
-     14 · Únete: pestañas
-     ------------------------------------------------------------------ */
-  const tabEls = $$('[role="tab"]');
-  const tabPanels = tabEls.map((t) => document.getElementById(t.getAttribute('aria-controls')));
-  const tabInd = $('.tabs__ind');
-  let tabCur = 0;
-  function positionTab() {
-    const t = tabEls[tabCur];
-    if (!t || !tabInd) return;
-    tabInd.style.setProperty('--x', t.offsetLeft + 'px');
-    tabInd.style.setProperty('--w', t.offsetWidth + 'px');
-  }
-  function selectTab(i, focus) {
-    tabCur = i;
-    tabEls.forEach((t, k) => {
-      t.setAttribute('aria-selected', String(k === i));
-      t.tabIndex = k === i ? 0 : -1;
-      if (tabPanels[k]) tabPanels[k].hidden = k !== i;
-    });
-    if (tabPanels[i]) $$('li', tabPanels[i]).forEach((li, k) => li.style.setProperty('--k', k));
-    positionTab();
-    if (focus) tabEls[i].focus();
-  }
-  safe(() => {
-    if (!tabEls.length) return;
-    tabEls.forEach((t, i) => {
-      t.addEventListener('click', () => selectTab(i));
-      t.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowRight') { e.preventDefault(); selectTab((i + 1) % tabEls.length, true); }
-        else if (e.key === 'ArrowLeft') { e.preventDefault(); selectTab((i - 1 + tabEls.length) % tabEls.length, true); }
-      });
-    });
-    selectTab(0);
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(positionTab);
-  }, 'pestañas');
-
-  /* ------------------------------------------------------------------
-     15 · FAQ: <details> con altura animada
-     ------------------------------------------------------------------ */
-  safe(() => {
-    $$('.qa').forEach((d) => {
-      const sum = $('summary', d);
-      const panel = $('.qa__panel', d);
-      if (!sum || !panel) return;
-      sum.addEventListener('click', (e) => {
+    $$('a[href^="#"]').forEach((a) => {
+      a.addEventListener('click', (e) => {
+        if (a.dataset.wa && a.target === '_blank') return; // CTA que abre WhatsApp
+        const id = a.getAttribute('href');
+        if (!id || id.length < 2) return;
+        const target = $(id);
+        if (!target) return;
         e.preventDefault();
-        if (d.open && d.classList.contains('is-open')) {
-          d.classList.remove('is-open');
-          let done = false;
-          const close = () => { if (done) return; done = true; d.open = false; };
-          panel.addEventListener('transitionend', close, { once: true });
-          setTimeout(close, 650);
-        } else {
-          d.open = true;
-          requestAnimationFrame(() => requestAnimationFrame(() => d.classList.add('is-open')));
-        }
+        menuApi.close();
+        if (lenis) lenis.scrollTo(target, { offset: 0, duration: 1.7, easing: (t) => 1 - Math.pow(1 - t, 4) });
+        else target.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
       });
     });
-  }, 'faq');
+    $$('[data-top]').forEach((a) => a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (lenis) lenis.scrollTo(0, { duration: 2 }); else window.scrollTo({ top: 0, behavior: reduce ? 'auto' : 'smooth' });
+    }));
+    if (reduce || !window.Lenis) doc.classList.add('native-smooth');
+  }, 'anclas');
 
-  /* ------------------------------------------------------------------
-     16 · Formulario → WhatsApp (con explosión de chispas)
-     ------------------------------------------------------------------ */
+  /* A4 · Acordeón de sectores y de preguntas frecuentes (altura animada por CSS) */
+  safe(() => {
+    const wire = (items, getBtn, single) => {
+      items.forEach((item) => {
+        const btn = getBtn(item);
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+          const open = item.classList.contains('is-open');
+          if (single) items.forEach((o) => { o.classList.remove('is-open'); const b = getBtn(o); if (b) b.setAttribute('aria-expanded', 'false'); });
+          item.classList.toggle('is-open', !open);
+          btn.setAttribute('aria-expanded', String(!open));
+          // El alto de la página cambia: se recalculan las animaciones ligadas al scroll
+          setTimeout(() => { if (fxOn) ScrollTrigger.refresh(); }, 900);
+        });
+      });
+    };
+    wire($$('.row'), (r) => $('.row__head', r), true);
+    wire($$('.qa'), (q) => $('button', q), false);
+  }, 'acordeones');
+
+  /* A5 · Pestañas de "Únete" (con teclado) */
+  safe(() => {
+    const tabs = $$('[role="tab"]');
+    if (!tabs.length) return;
+    const select = (tab, focus) => {
+      tabs.forEach((t) => {
+        const on = t === tab;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        const p = document.getElementById(t.getAttribute('aria-controls'));
+        if (p) p.hidden = !on;
+      });
+      if (focus) tab.focus();
+      if (fxOn) ScrollTrigger.refresh();
+    };
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t));
+      t.addEventListener('keydown', (e) => {
+        const k = e.key;
+        if (k === 'ArrowRight' || k === 'ArrowLeft') { e.preventDefault(); select(tabs[(i + (k === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length], true); }
+        if (k === 'Home') { e.preventDefault(); select(tabs[0], true); }
+        if (k === 'End') { e.preventDefault(); select(tabs[tabs.length - 1], true); }
+      });
+    });
+  }, 'pestanas');
+
+  /* A6 · Formulario: arma el mensaje y abre WhatsApp en la sede de la zona elegida */
   safe(() => {
     const form = $('#form');
     if (!form) return;
-    const burst = $('#burst');
-    const send = $('#f-send');
-    const fb = $('#f-fallback');
     const nameI = $('#f-nombre');
-
-    function sparks() {
-      if (!burst || reduce) return;
-      const b = burst.getContext('2d');
-      const dpr = Math.min(devicePixelRatio || 1, 2);
-      const fr = burst.getBoundingClientRect();
-      burst.width = fr.width * dpr; burst.height = fr.height * dpr;
-      b.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const sr = send.getBoundingClientRect();
-      const ox = sr.left + sr.width / 2 - fr.left, oy = sr.top + sr.height / 2 - fr.top;
-      const ps = Array.from({ length: 32 }, () => { const a = Math.random() * 6.2832, v = 80 + Math.random() * 220; return { a, v, s: 3 + Math.random() * 6 }; });
-      const t1 = performance.now();
-      (function go(now) {
-        const p = clamp((now - t1) / 500);
-        b.clearRect(0, 0, fr.width, fr.height);
-        ps.forEach((q) => {
-          const d = q.v * ease(p) * .6, x = ox + Math.cos(q.a) * d, y = oy + Math.sin(q.a) * d, s = q.s * (1 - p);
-          b.fillStyle = `rgba(111,230,236,${1 - p})`;
-          b.beginPath(); b.moveTo(x, y - s); b.quadraticCurveTo(x, y, x + s, y); b.quadraticCurveTo(x, y, x, y + s); b.quadraticCurveTo(x, y, x - s, y); b.quadraticCurveTo(x, y, x, y - s); b.fill();
-        });
-        if (p < 1) requestAnimationFrame(go); else b.clearRect(0, 0, fr.width, fr.height);
-      })(t1);
-    }
-
+    const fb = $('#f-fallback');
+    const fld = nameI.closest('.fld');
+    const err = $('.fld__err', fld);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const fld = nameI.closest('.fld');
-      const err = $('.fld__err', fld);
       const nombre = nameI.value.trim();
       if (!nombre) {
-        fld.classList.add('has-err'); if (err) err.textContent = 'Escribe tu nombre para continuar.';
-        nameI.setAttribute('aria-invalid', 'true'); nameI.focus(); return;
+        fld.classList.add('has-err');
+        if (err) err.textContent = 'Escribe tu nombre para continuar.';
+        nameI.setAttribute('aria-invalid', 'true');
+        nameI.focus();
+        return;
       }
-      fld.classList.remove('has-err'); if (err) err.textContent = ''; nameI.removeAttribute('aria-invalid');
-
+      fld.classList.remove('has-err');
+      if (err) err.textContent = '';
+      nameI.removeAttribute('aria-invalid');
       const empresa = $('#f-empresa').value.trim();
       const tipo = $('#f-tipo').value;
       const zona = $('#f-zona').value;
@@ -892,27 +160,502 @@ const WHATSAPP = { principal: '524439425320', edomex: '525656866128' };
       text += tipo ? ` Necesito cotizar limpieza para: ${tipo}.` : ' Necesito cotizar limpieza.';
       if (zona) text += ` Zona: ${zona}.`;
       if (msg) text += ` ${msg}`;
-
       const num = (zona === 'Estado de México' ? WHATSAPP.edomex : WHATSAPP.principal) || WHATSAPP.principal;
       if (!num) { if (fb) fb.hidden = false; return; }
-      sparks();
-      setTimeout(() => {
-        const w = window.open(waURL(num, text), '_blank');
-        if (w) { try { w.opener = null; } catch (_) { /* nada */ } } else { location.href = waURL(num, text); }
-      }, 500);
+      const w = window.open(waURL(num, text), '_blank', 'noopener');
+      if (!w) location.href = waURL(num, text);
     });
     nameI.addEventListener('input', () => {
-      const fld = nameI.closest('.fld');
-      if (nameI.value.trim()) { fld.classList.remove('has-err'); const er = $('.fld__err', fld); if (er) er.textContent = ''; }
+      if (nameI.value.trim()) { fld.classList.remove('has-err'); if (err) err.textContent = ''; nameI.removeAttribute('aria-invalid'); }
     });
   }, 'formulario');
 
-  /* ------------------------------------------------------------------
-     17 · Arranque
-     ------------------------------------------------------------------ */
-  setSvcLive();
-  safe(buildRibbon, 'cinta');
-  if (metDraw && metLen) { metDraw.style.strokeDashoffset = String(metLen); }
-  window.addEventListener('load', () => { safe(buildRibbon, 'cinta'); safe(positionTab, 'tabs'); safe(fillMarquees, 'marquesinas'); update(); });
-  update();
+  /* A7 · Reproductor de video (el archivo solo se descarga al pulsar play) */
+  safe(() => {
+    const v = $('#vid'), player = $('#player');
+    if (!v || !player) return;
+    const playBtn = $('#v-play'), toggle = $('#v-toggle'), mute = $('#v-mute'), prog = $('#v-prog'), track = $('.player__track', player);
+    const icon = (btn, id) => { const u = $('use', btn); if (u) u.setAttribute('href', id); };
+    const play = () => { player.classList.add('is-started'); v.play().catch(() => {}); };
+    playBtn.addEventListener('click', () => { v.muted = false; icon(mute, '#i-vol'); play(); });
+    toggle.addEventListener('click', () => { v.paused ? v.play() : v.pause(); });
+    v.addEventListener('click', () => { if (player.classList.contains('is-started')) (v.paused ? v.play() : v.pause()); });
+    mute.addEventListener('click', () => { v.muted = !v.muted; icon(mute, v.muted ? '#i-mute' : '#i-vol'); mute.setAttribute('aria-pressed', String(v.muted)); });
+    v.addEventListener('play', () => { player.classList.add('is-playing'); toggle.setAttribute('aria-label', 'Pausar video'); icon(toggle, '#i-pause'); });
+    v.addEventListener('pause', () => { player.classList.remove('is-playing'); toggle.setAttribute('aria-label', 'Reanudar video'); icon(toggle, '#i-play'); });
+    v.addEventListener('timeupdate', () => { prog.style.transform = `scaleX(${v.duration ? v.currentTime / v.duration : 0})`; });
+    v.addEventListener('ended', () => { player.classList.remove('is-playing', 'is-started'); v.currentTime = 0; prog.style.transform = 'scaleX(0)'; });
+    track.addEventListener('click', (e) => { const r = track.getBoundingClientRect(); if (v.duration) v.currentTime = clamp((e.clientX - r.left) / r.width) * v.duration; });
+    // Si el video sale de pantalla, se pausa solo
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver((es) => es.forEach((e) => { if (!e.isIntersecting && !v.paused) v.pause(); }), { threshold: 0.15 }).observe(player);
+    }
+  }, 'video');
+
+  /* A8 · Brillo que sigue al cursor en tarjetas */
+  safe(() => {
+    if (!fine) return;
+    $$('.spot').forEach((el) => el.addEventListener('pointermove', (e) => {
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+      el.style.setProperty('--my', (e.clientY - r.top) + 'px');
+    }, { passive: true }));
+  }, 'brillo');
+
+  /* A9 · Cristal interactivo: se limpia con el dedo o el cursor */
+  const glass = safe(() => {
+    const frame = $('#gframe'), canvas = $('#g-canvas'), img = $('#g-img'), ring = $('#g-ring'), btn = $('#g-clean');
+    if (!frame || !canvas || !img) return null;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const small = document.createElement('canvas'); small.width = 32; small.height = 44;
+    const sctx = small.getContext('2d', { willReadFrequently: true });
+    let W = 0, H = 0, dpr = 1, clean = false, drawing = false, last = null, lastCheck = 0, auto = null;
+
+    const setRing = (p) => { if (ring) ring.style.strokeDashoffset = String(100 - clamp(p) * 100); };
+
+    function paintDirt() {
+      if (!W || !H) return;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.clearRect(0, 0, W, H);
+      try { ctx.filter = 'blur(24px) saturate(.45) brightness(1.18)'; ctx.drawImage(img, -40, -40, W + 80, H + 80); ctx.filter = 'none'; } catch (e) { /* sin filtro: solo velo */ }
+      ctx.fillStyle = 'rgba(206,221,233,.72)'; ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = .1; ctx.strokeStyle = '#fff';
+      for (let i = 0; i < 26; i++) { ctx.lineWidth = rand(2, 10) * dpr; ctx.beginPath(); const x = rand(0, W); ctx.moveTo(x, -20); ctx.lineTo(x + rand(-90, 90), H + 20); ctx.stroke(); }
+      ctx.globalAlpha = .38; ctx.fillStyle = '#fff';
+      for (let i = 0; i < 170; i++) { ctx.beginPath(); ctx.arc(rand(0, W), rand(0, H), rand(.5, 2.4) * dpr, 0, 6.2832); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
+
+    function size() {
+      const r = frame.getBoundingClientRect();
+      if (!r.width) return;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const nw = Math.round(r.width * dpr), nh = Math.round(r.height * dpr);
+      if (nw === W && nh === H) return;
+      W = canvas.width = nw; H = canvas.height = nh;
+      if (!clean) paintDirt();
+    }
+
+    function stamp(x, y) {
+      const r = 50 * dpr;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(.55, 'rgba(0,0,0,.92)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+    }
+    function wipe(x0, y0, x1, y1) {
+      const d = Math.hypot(x1 - x0, y1 - y0), step = 9 * dpr, n = Math.max(1, Math.ceil(d / step));
+      for (let i = 0; i <= n; i++) stamp(x0 + (x1 - x0) * (i / n), y0 + (y1 - y0) * (i / n));
+    }
+
+    function coverage() {
+      sctx.clearRect(0, 0, 32, 44); sctx.drawImage(canvas, 0, 0, 32, 44);
+      const d = sctx.getImageData(0, 0, 32, 44).data; let c = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] < 70) c++;
+      return c / (32 * 44);
+    }
+    function check(force) {
+      const now = performance.now();
+      if (!force && now - lastCheck < 110) return;
+      lastCheck = now;
+      const c = coverage();
+      setRing(c / .62);
+      if (c >= .62) finish();
+    }
+    function finish() {
+      if (clean) return;
+      clean = true;
+      setRing(1);
+      frame.classList.add('is-clean');
+      if (btn) btn.querySelector('span').textContent = 'Volver a empezar';
+      if (window.gsap) gsap.to(canvas, { opacity: 0, duration: 1, ease: 'power2.out', onComplete: () => { canvas.style.display = 'none'; } });
+      else canvas.style.display = 'none';
+    }
+    function reset() {
+      if (auto) { auto.kill(); auto = null; }
+      clean = false; last = null;
+      canvas.style.display = ''; canvas.style.opacity = '1';
+      if (window.gsap) gsap.set(canvas, { opacity: 1 });
+      frame.classList.remove('is-clean');
+      if (btn) btn.querySelector('span').textContent = 'Limpiar el cristal';
+      setRing(0);
+      paintDirt();
+    }
+    function autoClean() {
+      if (clean) { reset(); return; }
+      if (!window.gsap || reduce) { wipe(0, H * .5, W, H * .5); finish(); return; }
+      const rows = 7, o = { t: 0 };
+      const pt = (t) => { const k = t * rows, row = Math.min(rows - 1, Math.floor(k)), f = k - row; const x = (row % 2 === 0 ? f : 1 - f) * W; return [x, (row + .5) / rows * H]; };
+      let prev = pt(0);
+      auto = gsap.to(o, { t: .9999, duration: 1.9, ease: 'power1.inOut', onUpdate() { const p = pt(o.t); wipe(prev[0], prev[1], p[0], p[1]); prev = p; check(true); }, onComplete() { wipe(0, H, W, H); finish(); } });
+    }
+
+    const pos = (e) => { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) * (W / r.width), (e.clientY - r.top) * (H / r.height)]; };
+    canvas.addEventListener('pointerdown', (e) => { if (clean) return; if (auto) { auto.kill(); auto = null; } drawing = true; canvas.setPointerCapture(e.pointerId); last = pos(e); wipe(last[0], last[1], last[0], last[1]); check(); });
+    canvas.addEventListener('pointermove', (e) => {
+      if (clean) return;
+      if (e.pointerType === 'mouse' || drawing) { const p = pos(e); if (!last) last = p; wipe(last[0], last[1], p[0], p[1]); last = p; check(); }
+    });
+    const up = () => { drawing = false; if (!matchMedia('(hover: hover)').matches) last = null; };
+    canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+    canvas.addEventListener('pointerleave', () => { last = null; });
+    if (btn) btn.addEventListener('click', autoClean);
+
+    const start = () => { size(); if ('ResizeObserver' in window) new ResizeObserver(size).observe(frame); else window.addEventListener('resize', size); };
+    if (img.complete && img.naturalWidth) start(); else img.addEventListener('load', start, { once: true });
+    return { size };
+  }, 'cristal');
+
+  /* ======================================================================
+     B · COREOGRAFÍA (GSAP + ScrollTrigger + SplitText + Lenis)
+     ====================================================================== */
+
+  const loader = $('#loader');
+  function endLoading() {
+    if (loader) loader.style.display = 'none';
+    document.body.classList.remove('is-loading');
+    if (lenis) lenis.start();
+  }
+
+  function fallback() {
+    doc.classList.add('no-fx');
+    endLoading();
+    window.__abrajOK = true;
+  }
+
+  if (!window.gsap || !window.ScrollTrigger || !window.SplitText) { fallback(); return; }
+
+  gsap.registerPlugin(ScrollTrigger, SplitText);
+  ScrollTrigger.config({ ignoreMobileResize: true });
+  // Nota: GSAP redondea a píxeles enteros por defecto; en los trazos SVG (stroke-dashoffset de 1 a 0) hay que pasar
+  // autoRound:false en cada tween, si no la línea salta de oculta a dibujada de golpe.
+  fxOn = true;
+  window.__abrajOK = true;
+
+  /* B0 · Scroll suave */
+  if (!reduce && window.Lenis) {
+    lenis = new Lenis({ duration: 1.15, easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)), touchMultiplier: 1.3 });
+    lenis.on('scroll', ScrollTrigger.update);
+    gsap.ticker.add((t) => lenis.raf(t * 1000));
+    gsap.ticker.lagSmoothing(0);
+    lenis.stop();
+    doc.classList.add('lenis', 'lenis-smooth');
+  }
+
+  const motion = !reduce;
+  const mm = gsap.matchMedia();
+  let introTL = null;
+
+  /* Textos grandes: máscaras por línea con margen para que no se corten las colas (p, g, y) */
+  const padMasks = (split) => split.masks && gsap.set(split.masks, { paddingTop: '.14em', paddingBottom: '.14em', marginTop: '-.14em', marginBottom: '-.14em' });
+
+  /* "Una sola vez al entrar en pantalla". Usa IntersectionObserver (y no un ScrollTrigger con once) porque se
+     dispara igual si el visitante llega con un salto largo: barra de scroll, tecla Fin o ancla. */
+  const inView = (el, cb, rootMargin = '0px 0px -9% 0px') => {
+    if (!('IntersectionObserver' in window)) { cb(); return; }
+    const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) { io.disconnect(); cb(); } }, { rootMargin, threshold: 0 });
+    io.observe(el);
+  };
+
+  /* Todo lo que divide textos o mide el diseño corre DESPUÉS de que cargue la tipografía,
+     si no, las líneas se calculan con la fuente de respaldo y se descuadran. */
+  const build = () => {
+
+  /* B1 · Hero: texto por líneas, logo, partículas y movimiento con el cursor */
+  safe(() => {
+    const hero = $('#inicio');
+    if (!hero) return;
+    let split = null;
+    if (motion) {
+      split = SplitText.create('.hero__title', { type: 'lines', mask: 'lines', linesClass: 'ln' });
+      padMasks(split);
+      introTL = gsap.timeline({ paused: true, defaults: { ease: 'expo.out' } });
+      introTL.from(split.lines, { yPercent: 112, duration: 1.5, stagger: .13 }, 0)
+        .from('[data-hero]', { y: 34, opacity: 0, duration: 1.2, stagger: .1 }, .35)
+        .from('.hero__mark', { scale: .8, opacity: 0, y: 40, duration: 2 }, .05)
+        .from('.hdr', { yPercent: -100, opacity: 0, duration: 1.1 }, .4);
+    }
+
+    // Movimiento 3D del logo con el cursor
+    if (motion && fine) {
+      const tilt = $('.mark__tilt');
+      const rx = gsap.quickTo(tilt, 'rotationX', { duration: 1.2, ease: 'power3' });
+      const ry = gsap.quickTo(tilt, 'rotationY', { duration: 1.2, ease: 'power3' });
+      const tx = gsap.quickTo(tilt, 'x', { duration: 1.4, ease: 'power3' });
+      const ty = gsap.quickTo(tilt, 'y', { duration: 1.4, ease: 'power3' });
+      hero.addEventListener('pointermove', (e) => {
+        const r = hero.getBoundingClientRect();
+        const px = (e.clientX - r.left) / r.width - .5, py = (e.clientY - r.top) / r.height - .5;
+        ry(px * 16); rx(-py * 12); tx(px * 22); ty(py * 14);
+      }, { passive: true });
+      hero.addEventListener('pointerleave', () => { rx(0); ry(0); tx(0); ty(0); });
+    }
+
+    // Partículas de polvo que se apartan del cursor
+    const c = $('#dust');
+    if (c && motion) {
+      const ctx = c.getContext('2d');
+      let w = 0, h = 0, dpr = 1, parts = [], run = false, t = 0;
+      const mouse = { x: -999, y: -999 };
+      const make = () => ({ x: rand(0, w), y: rand(0, h), r: Math.random() < .14 ? rand(3, 6) : rand(.5, 1.9), vx: rand(-.1, .1), vy: rand(-.34, -.06), a: rand(.18, .7), ph: rand(0, 6.28) });
+      const resize = () => {
+        w = c.clientWidth; h = c.clientHeight; dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+        c.width = w * dpr; c.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        parts = Array.from({ length: clamp(Math.round(w * h / 21000), 28, 84) }, make);
+      };
+      const frame = () => {
+        if (!run) return;
+        t += .016; ctx.clearRect(0, 0, w, h);
+        for (const p of parts) {
+          p.x += p.vx + Math.sin(t + p.ph) * .12; p.y += p.vy;
+          const dx = p.x - mouse.x, dy = p.y - mouse.y, d2 = dx * dx + dy * dy;
+          if (d2 < 16900) { const d = Math.sqrt(d2) || 1, f = (130 - d) / 130; p.x += dx / d * f * 3.2; p.y += dy / d * f * 3.2; }
+          if (p.y < -10) { p.y = h + 10; p.x = rand(0, w); }
+          if (p.x < -10) p.x = w + 10; else if (p.x > w + 10) p.x = -10;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 6.2832);
+          if (p.r > 2.5) { ctx.strokeStyle = `rgba(111,230,236,${p.a * .35})`; ctx.lineWidth = 1; ctx.stroke(); }
+          else { ctx.fillStyle = `rgba(200,236,244,${p.a})`; ctx.fill(); }
+        }
+        requestAnimationFrame(frame);
+      };
+      const setRun = (on) => { if (on && !run) { run = true; requestAnimationFrame(frame); } else if (!on) run = false; };
+      resize();
+      window.addEventListener('resize', resize);
+      hero.addEventListener('pointermove', (e) => { const r = c.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; }, { passive: true });
+      hero.addEventListener('pointerleave', () => { mouse.x = mouse.y = -999; });
+      new IntersectionObserver((es) => setRun(es[0].isIntersecting && !document.hidden), { threshold: 0 }).observe(hero);
+      document.addEventListener('visibilitychange', () => { if (document.hidden) setRun(false); else if (hero.getBoundingClientRect().bottom > 0) setRun(true); });
+    }
+
+    // En escritorio el hero se queda fijo y la siguiente sección lo cubre; el texto se desvanece con profundidad
+    mm.add('(min-width: 901px) and (prefers-reduced-motion: no-preference)', () => {
+      ScrollTrigger.create({ trigger: hero, start: 'top top', end: '+=100%', pin: true, pinSpacing: false });
+      // Cada efecto de scroll va sobre un elemento distinto al de la animación de entrada (así no se pisan)
+      gsap.fromTo('.hero__grid', { yPercent: 0, opacity: 1 }, { yPercent: -10, opacity: .12, ease: 'none', scrollTrigger: { trigger: hero, start: 'top top', end: '+=85%', scrub: true } });
+      gsap.fromTo('.mark__tilt', { scale: 1, yPercent: 0 }, { scale: 1.14, yPercent: 8, ease: 'none', scrollTrigger: { trigger: hero, start: 'top top', end: '+=95%', scrub: true } });
+      gsap.fromTo('.hero .ticker', { opacity: 1 }, { opacity: 0, ease: 'none', scrollTrigger: { trigger: hero, start: 'top top', end: '+=40%', scrub: true } });
+    });
+  }, 'hero');
+
+  /* B2 · Manifiesto: las palabras se encienden al avanzar el scroll */
+  safe(() => {
+    const p = $('[data-words]');
+    if (!p || !motion) return;
+    const split = SplitText.create(p, { type: 'words', wordsClass: 'w' });
+    gsap.fromTo(split.words, { opacity: .14 }, {
+      opacity: 1, ease: 'none', stagger: .08, duration: .5,
+      scrollTrigger: { trigger: p, start: 'top 80%', end: 'bottom 55%', scrub: true }
+    });
+  }, 'manifiesto');
+
+  /* B3 · Títulos de sección: revelado por líneas con máscara */
+  safe(() => {
+    if (!motion) return;
+    $$('[data-split]').forEach((el) => {
+      SplitText.create(el, {
+        type: 'lines', mask: 'lines', linesClass: 'ln', autoSplit: true,
+        onSplit(self) {
+          padMasks(self);
+          if (el.dataset.done) return;           // ya se reveló: tras un resize las líneas nuevas quedan visibles
+          gsap.set(self.lines, { yPercent: 112 });
+          const tw = gsap.to(self.lines, { yPercent: 0, duration: 1.3, ease: 'expo.out', stagger: .09, paused: true });
+          el.__tw = tw;
+          if (el.__seen) tw.play();
+          return tw;
+        }
+      });
+      inView(el, () => { el.__seen = true; el.dataset.done = '1'; if (el.__tw) el.__tw.play(); }, '0px 0px -13% 0px');
+    });
+  }, 'titulos');
+
+  /* B4 · Bloques que suben y aparecen (en lote, escalonados) */
+  safe(() => {
+    if (!motion) return;
+    const items = $$('[data-rv]');
+    gsap.set(items, { opacity: 0, y: 44 });
+    let queue = [], pending = false;
+    const flush = () => {
+      pending = false;
+      const batch = queue; queue = [];
+      gsap.to(batch, { opacity: 1, y: 0, duration: 1.3, ease: 'expo.out', stagger: .09, clearProps: 'transform,opacity' });
+    };
+    items.forEach((el) => inView(el, () => { queue.push(el); if (!pending) { pending = true; requestAnimationFrame(flush); } }, '0px 0px -9% 0px'));
+  }, 'bloques');
+
+  /* B5 · Imágenes: se abren con máscara y tienen profundidad (parallax) */
+  safe(() => {
+    if (!motion) return;
+    $$('[data-reveal-img]').forEach((fig) => {
+      const clip = $('.img-clip', fig), img = $('img', fig);
+      gsap.set(clip, { clipPath: 'inset(100% 0% 0% 0% round 28px)' });
+      gsap.set(img, { scale: 1.22 });
+      const open = gsap.timeline({ paused: true })
+        .to(clip, { clipPath: 'inset(0% 0% 0% 0% round 28px)', duration: 1.7, ease: 'expo.out', clearProps: 'clipPath' }, 0)
+        .to(img, { scale: 1, duration: 2.2, ease: 'expo.out' }, 0);
+      inView(fig, () => open.play(), '0px 0px -14% 0px');
+      gsap.fromTo(img, { yPercent: -6 }, { yPercent: 6, ease: 'none', scrollTrigger: { trigger: fig, start: 'top bottom', end: 'bottom top', scrub: true } });
+    });
+  }, 'imagenes');
+
+  /* B6 · Cifras */
+  safe(() => {
+    if (!motion) return;
+    $$('[data-count]').forEach((el) => {
+      const end = Number(el.dataset.count), o = { v: 0 };
+      el.textContent = '0';
+      inView(el, () => gsap.to(o, { v: end, duration: 2.2, ease: 'power3.out', onUpdate: () => { el.textContent = String(Math.round(o.v)); } }), '0px 0px -8% 0px');
+    });
+  }, 'cifras');
+
+  /* B7 · Servicios: carril horizontal fijado (escritorio) o pila vertical (móvil) */
+  safe(() => {
+    const pin = $('#svc-pin'), track = $('#svc-track'), bar = $('#svc-bar');
+    if (!pin || !track) return;
+    const drawables = (card) => $$('.draw path, .draw rect', card);
+
+    mm.add('(min-width: 901px) and (prefers-reduced-motion: no-preference)', () => {
+      const dist = () => Math.max(0, track.scrollWidth - window.innerWidth);
+      const tween = gsap.to(track, {
+        x: () => -dist(), ease: 'none',
+        scrollTrigger: {
+          trigger: pin, start: 'top top', end: () => '+=' + dist(), pin: true, scrub: .9, invalidateOnRefresh: true, anticipatePin: 1,
+          onUpdate: (s) => { if (bar) bar.style.transform = `scaleX(${s.progress})`; }
+        }
+      });
+      $$('.card', track).forEach((card) => {
+        const paths = drawables(card);
+        gsap.set(paths, { strokeDashoffset: 1 });
+        gsap.to(paths, { strokeDashoffset: 0, ease: 'none', autoRound: false, scrollTrigger: { trigger: card, containerAnimation: tween, start: 'left 84%', end: 'left 40%', scrub: true } });
+        gsap.fromTo($('.card__n', card), { xPercent: 26 }, { xPercent: -14, ease: 'none', scrollTrigger: { trigger: card, containerAnimation: tween, start: 'left 100%', end: 'right 0%', scrub: true } });
+      });
+    });
+
+    mm.add('(max-width: 900px) and (prefers-reduced-motion: no-preference)', () => {
+      $$('.card').forEach((card) => {
+        const paths = drawables(card);
+        gsap.set(paths, { strokeDashoffset: 1 });
+        const enter = gsap.timeline({ paused: true })
+          .from(card, { y: 50, opacity: 0, duration: 1.2, ease: 'expo.out', clearProps: 'transform,opacity' }, 0)
+          .to(paths, { strokeDashoffset: 0, duration: 1.8, ease: 'power2.out', autoRound: false }, .1);
+        inView(card, () => enter.play(), '0px 0px -10% 0px');
+      });
+    });
+  }, 'servicios');
+
+  /* B8 · Video: el marco se endereza y crece al entrar */
+  safe(() => {
+    mm.add('(min-width: 901px) and (prefers-reduced-motion: no-preference)', () => {
+      gsap.fromTo('.player__frame', { rotationX: 16, scale: .84, y: 70 }, { rotationX: 0, scale: 1, y: 0, ease: 'none', scrollTrigger: { trigger: '.vid', start: 'top 85%', end: 'center 55%', scrub: true } });
+    });
+  }, 'video-fx');
+
+  /* B9 · Método: la línea se llena y cada paso se enciende */
+  safe(() => {
+    const wrap = $('#steps'), fill = $('#steps-fill'), steps = $$('.step');
+    if (!wrap || !fill || !motion) return;
+    mm.add('(min-width: 901px)', () => {
+      gsap.set(fill, { scaleX: 0, scaleY: 1 });
+      gsap.to(fill, { scaleX: 1, ease: 'none', scrollTrigger: { trigger: wrap, start: 'top 72%', end: 'bottom 62%', scrub: true,
+        onUpdate: (s) => steps.forEach((st, i) => st.classList.toggle('is-on', s.progress >= i / steps.length + .02)) } });
+    });
+    mm.add('(max-width: 900px)', () => {
+      gsap.set(fill, { scaleX: 1, scaleY: 0 });
+      gsap.to(fill, { scaleY: 1, ease: 'none', scrollTrigger: { trigger: wrap, start: 'top 70%', end: 'bottom 60%', scrub: true,
+        onUpdate: (s) => steps.forEach((st, i) => st.classList.toggle('is-on', s.progress >= i / steps.length + .02)) } });
+    });
+  }, 'metodo');
+
+  /* B10 · Nosotros: la imagen se abre hasta ocupar toda la pantalla */
+  safe(() => {
+    mm.add('(min-width: 901px) and (prefers-reduced-motion: no-preference)', () => {
+      const sec = $('#nosotros'), media = $('#about-media'), card = $('#about-card');
+      if (!sec || !media || !card) return;
+      gsap.set(card, { opacity: 0, y: 70 });
+      gsap.timeline({ scrollTrigger: { trigger: sec, start: 'top top', end: 'bottom bottom', scrub: .8 } })
+        .to(media, { clipPath: 'inset(0% 0% 0% 0% round 0px)', ease: 'none', duration: 1 }, 0)
+        .to($('img', media), { scale: 1, ease: 'none', duration: 1.7 }, 0)
+        .to(card, { opacity: 1, y: 0, ease: 'power2.out', duration: .55 }, .82);
+    });
+  }, 'nosotros');
+
+  /* B11 · Cobertura: la ruta se dibuja y los puntos aparecen */
+  safe(() => {
+    const draw = $('#arc-draw');
+    if (!draw || !motion) return;
+    gsap.set(draw, { strokeDashoffset: 1 });
+    gsap.to(draw, { strokeDashoffset: 0, ease: 'none', autoRound: false, scrollTrigger: { trigger: '#route', start: 'top 82%', end: 'bottom 45%', scrub: true } });
+    const pop = gsap.timeline({ paused: true })
+      .from('.route__node circle:not(.pulse)', { scale: 0, transformOrigin: '50% 50%', duration: 1, ease: 'back.out(2.2)', stagger: .35 }, 0)
+      .from('.route text', { opacity: 0, y: 12, duration: 1, stagger: .3, ease: 'expo.out' }, .2);
+    inView($('#route'), () => pop.play(), '0px 0px -20% 0px');
+  }, 'cobertura');
+
+  /* B12 · Pie: la palabra gigante se llena de color */
+  safe(() => {
+    if (!motion) return;
+    gsap.to('#foot-fill', { clipPath: 'inset(0% 0 0 0)', ease: 'none', scrollTrigger: { trigger: '.foot__word', start: 'top 96%', end: 'bottom 72%', scrub: true } });
+  }, 'pie');
+
+  /* B13 · Botones magnéticos */
+  safe(() => {
+    if (!motion || !fine) return;
+    $$('.magnet').forEach((b) => {
+      const x = gsap.quickTo(b, 'x', { duration: .7, ease: 'power3' }), y = gsap.quickTo(b, 'y', { duration: .7, ease: 'power3' });
+      b.addEventListener('pointermove', (e) => { const r = b.getBoundingClientRect(); x((e.clientX - r.left - r.width / 2) * .22); y((e.clientY - r.top - r.height / 2) * .32); });
+      b.addEventListener('pointerleave', () => { x(0); y(0); });
+    });
+  }, 'magneticos');
+
+  /* B14 · Barra de progreso, tema del encabezado y enlace activo (todo en una sola pasada por scroll) */
+  safe(() => {
+    const bar = $('#progress'), hdr = $('#hdr');
+    const themed = $$('main [data-theme], footer[data-theme]');
+    const nav = new Map($$('.nav a[href^="#"]').map((a) => [a.getAttribute('href').slice(1), a]));
+    const secs = $$('main > section[id]');
+    let theme = '', activeId = '';
+    ScrollTrigger.create({
+      start: 0, end: 'max',
+      onUpdate: (s) => {
+        if (bar) bar.style.transform = `scaleX(${s.progress})`;
+        let t = 'dark';
+        for (const el of themed) { if (el.getBoundingClientRect().top <= 40) t = el.dataset.theme; else break; }
+        if (t !== theme) { theme = t; hdr.dataset.theme = t; }
+        let id = '';
+        for (const el of secs) { if (el.getBoundingClientRect().top <= window.innerHeight * .45) id = el.id; else break; }
+        if (id !== activeId) { activeId = id; nav.forEach((a, k) => a.classList.toggle('is-active', k === id)); }
+      }
+    });
+  }, 'scroll-estado');
+
+  };  // fin de build()
+
+  /* B15 · Cargador y arranque: el contador corre mientras carga la tipografía; la cortina se abre
+     solo cuando todo está construido, para que nunca se vea el texto sin dividir. */
+  const fontsReady = (document.fonts && document.fonts.ready)
+    ? Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 2200))])
+    : Promise.resolve();
+  const built = fontsReady.then(() => { try { build(); } catch (err) { console.warn('[ABRAJ] build', err); } ScrollTrigger.refresh(); });
+
+  const curtain = () => {
+    gsap.timeline()
+      .to('.loader__core', { opacity: 0, y: -24, duration: .5, ease: 'power2.in' })
+      .to('.loader__panel--t', { yPercent: -101, duration: 1.05, ease: 'expo.inOut' }, '>-.05')
+      .to('.loader__panel--b', { yPercent: 101, duration: 1.05, ease: 'expo.inOut' }, '<')
+      .add(() => { document.body.classList.remove('is-loading'); if (lenis) lenis.start(); if (introTL) introTL.play(); }, '<+.3')
+      .add(() => { if (loader) loader.style.display = 'none'; ScrollTrigger.refresh(); });
+  };
+
+  const n = $('#ld-n'), fillLogo = $('.loader__fill'), line = $('.loader__line i');
+  const o = { v: 0 };
+  gsap.to(o, {
+    v: 100, duration: motion ? 1.5 : .3, ease: 'power2.inOut',
+    onUpdate: () => {
+      if (n) n.textContent = String(Math.round(o.v));
+      if (line) line.style.transform = `scaleX(${o.v / 100})`;
+      if (fillLogo) fillLogo.style.clipPath = `inset(${100 - o.v}% 0 0 0)`;
+    },
+    onComplete: () => { built.then(curtain); }
+  });
+
+  window.addEventListener('load', () => { ScrollTrigger.refresh(); if (glass) glass.size(); });
 })();

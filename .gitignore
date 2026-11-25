@@ -7,3 +7,6 @@ Thumbs.db
 .DS_Store
 *.log
 .cache/
+
+# Audios del cliente (no se publican)
+whatsapp-audio-*
